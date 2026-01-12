@@ -6,42 +6,38 @@ const dailyStatsQuery = `
 WITH daily_payments AS (
     SELECT 
         DATE(block_time) as payment_date,
-        SUM(varbinary_to_uint256(bytearray_substring(data, 65, 32))) as daily_volume
+        COUNT(*) as payment_count,
+        SUM(varbinary_to_uint256(bytearray_substring(data, 1, 32))) as daily_received
     FROM opbnb.logs
     WHERE 
         contract_address = 0xEe83640f0ed07d36E799531CC6d87FB4CDcCaC13
         AND topic0 = 0x32aced27dfd49efcd31ceb0567a1ef533d2ab1481334c3f316047bf16fe1c8e8
-        AND block_number >= 92328871
+        AND topic3 = 0x0000000000000000000000009e5aac1ba1a2e6aed6b32689dfcf62a509ca96f3
     GROUP BY DATE(block_time)
 ),
-daily_refunds AS (
+daily_withdrawals AS (
     SELECT 
-        DATE(block_time) as refund_date,
-        SUM(varbinary_to_uint256(bytearray_substring(data, 65, 32))) as daily_refund_volume
+        DATE(block_time) as withdrawal_date,
+        COUNT(*) as withdrawal_count,
+        SUM(varbinary_to_uint256(bytearray_substring(data, 1, 32))) as daily_withdrawn
     FROM opbnb.logs
     WHERE 
         contract_address = 0xEe83640f0ed07d36E799531CC6d87FB4CDcCaC13
-        AND topic0 = 0x4d60a9438ba7e18c1fed7577dc8932bfe82f683c1e254a5336b6618ab5301641
-        AND block_number >= 92328871
+        AND topic0 = 0x8210728e7c071f615b840ee026032693858fbcd5e5359e67e438c890f59e5620
+        AND topic2 = 0x0000000000000000000000009e5aac1ba1a2e6aed6b32689dfcf62a509ca96f3
     GROUP BY DATE(block_time)
-),
-eth_price AS (
-    SELECT price
-    FROM prices.usd
-    WHERE symbol = 'ETH'
-    AND blockchain = 'opbnb'
-    ORDER BY minute DESC
-    LIMIT 1
 )
 SELECT 
-    COALESCE(dp.payment_date, dr.refund_date) as date,
-    (COALESCE(dp.daily_volume, 0) - COALESCE(dr.daily_refund_volume, 0)) / 1e18 as daily_net_revenue_eth,
-    (COALESCE(dp.daily_volume, 0) - COALESCE(dr.daily_refund_volume, 0)) / 1e18 * COALESCE(ep.price, 2500) as daily_net_revenue_usd,
-    COALESCE(dp.daily_volume, 0) / 1e18 as daily_volume_eth,
-    (COALESCE(dp.daily_volume, 0) / 1e18) * COALESCE(ep.price, 2500) as daily_volume_usd
+    COALESCE(dp.payment_date, dw.withdrawal_date) as date,
+    
+    COALESCE(dp.daily_received, 0) / 1e18 as daily_received_usdt,
+    COALESCE(dw.daily_withdrawn, 0) / 1e18 as daily_withdrawn_usdt,
+    (COALESCE(dp.daily_received, 0) - COALESCE(dw.daily_withdrawn, 0)) / 1e18 as daily_net_usdt,
+    
+    COALESCE(dp.payment_count, 0) as payment_count,
+    COALESCE(dw.withdrawal_count, 0) as withdrawal_count
 FROM daily_payments dp
-FULL OUTER JOIN daily_refunds dr ON dp.payment_date = dr.refund_date
-CROSS JOIN eth_price ep
+FULL OUTER JOIN daily_withdrawals dw ON dp.payment_date = dw.withdrawal_date
 ORDER BY date DESC
 `;
 
@@ -58,8 +54,9 @@ const fetch = async (_timestamp: number, _: any, options: FetchOptions): Promise
     return rowDate === dayStr;
   });
 
-  const dailyRevenue = dailyStatRow ? dailyStatRow.daily_net_revenue_usd : undefined;
-  const dailyVolume = dailyStatRow ? dailyStatRow.daily_volume_usd : undefined;
+  const dailyRevenue = dailyStatRow ? dailyStatRow.daily_net_usdt : undefined;
+  // Volume usually refers to the total amount processed, which here would be the received amount
+  const dailyVolume = dailyStatRow ? dailyStatRow.daily_received_usdt : undefined;
   
   return {
     dailyFees: dailyRevenue, // Assuming fees = revenue for this protocol based on description
@@ -78,9 +75,9 @@ const prefetch = async (options: FetchOptions) => {
 }
 
 const methodology = {
-  Fees: "Net revenue from payments and refunds",
-  Revenue: "Net revenue from payments and refunds",
-  Volume: "Total user payment volume",
+  Fees: "Net revenue from payments and withdrawals (USDT)",
+  Revenue: "Net revenue from payments and withdrawals (USDT)",
+  Volume: "Total user payment volume (USDT)",
 }
 
 const adapter: Adapter = {
